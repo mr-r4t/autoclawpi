@@ -15,8 +15,8 @@
 </div>
 
 <div class="glass" style="padding:20px;margin-bottom:16px">
-  <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px">
-    <i class="fas fa-list" style="color:#818cf8"></i> Available Models
+  <h3 style="font-size:15px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px">
+    <i class="fas fa-list" style="color:#818cf8"></i> Available Models <span style="font-size:11px;color:#34d399;font-weight:500;margin-left:4px"><i class="fas fa-circle" style="font-size:6px;vertical-align:middle"></i> live</span>
   </h3>
   <div style="display:flex;flex-wrap:wrap;gap:6px">
     {{range .Models}}
@@ -25,6 +25,7 @@
     <span style="color:#64748b;font-size:13px">No models loaded</span>
     {{end}}
   </div>
+  <div style="margin-top:8px;font-size:12px;color:#64748b">Verified real-time against upstream (refreshed every 10 minutes) — only models that actually work are listed.</div>
 </div>
 
 <div class="glass" style="padding:20px;margin-bottom:16px">
@@ -37,9 +38,9 @@
         <span class="badge badge-success" style="font-size:10px">GET</span>
         <code style="font-size:13px;color:#e2e8f0">/v1/models</code>
       </div>
-      <p style="font-size:12px;color:#64748b;margin-bottom:8px">List available models. No authentication required.</p>
+      <p style="font-size:12px;color:#64748b;margin-bottom:8px">List available models. Requires API key too if configured in Settings (same Bearer header).</p>
       <div style="background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;font-family:mono;font-size:12px;color:#60a5fa">
-        curl http://localhost:8787/v1/models
+        curl -H "Authorization: Bearer sk-your-key-here" http://localhost:8787/v1/models
       </div>
     </div>
 
@@ -51,11 +52,46 @@
       <p style="font-size:12px;color:#64748b;margin-bottom:8px">Send a chat completion request. OpenAI-compatible format.</p>
       <div style="background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;font-family:mono;font-size:12px;color:#60a5fa">
         curl -X POST http://localhost:8787/v1/chat/completions \<br>
+        &nbsp;&nbsp;-H "Authorization: Bearer sk-your-key-here" \<br>
         &nbsp;&nbsp;-H "Content-Type: application/json" \<br>
-        &nbsp;&nbsp;-d '{"model":"glm-5-turbo","messages":[{"role":"user","content":"halo"}]}'
+        &nbsp;&nbsp;-d '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"halo"}]}'
       </div>
     </div>
   </div>
+</div>
+
+<div class="glass" style="padding:20px;margin-bottom:16px">
+  <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px">
+    <i class="fas fa-reply" style="color:#818cf8"></i> Response
+  </h3>
+  <p style="font-size:12px;color:#64748b;margin-bottom:8px">Non-streaming response follows the OpenAI format, including token usage:</p>
+  <div style="background:rgba(0,0,0,0.3);padding:12px 16px;border-radius:10px;font-family:mono;font-size:12px;color:#a5b4fc;white-space:pre;overflow-x:auto">{
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "model": "zai_glm-5.3-flash",
+  "choices": [{
+    "index": 0,
+    "finish_reason": "stop",
+    "message": { "role": "assistant", "content": "Halo! Ada yang bisa saya bantu?" }
+  }],
+  "usage": {
+    "prompt_tokens": 18,
+    "completion_tokens": 60,
+    "total_tokens": 78
+  }
+}</div>
+</div>
+
+<div class="glass" style="padding:20px;margin-bottom:16px">
+  <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px">
+    <i class="fas fa-bolt" style="color:#818cf8"></i> Streaming
+  </h3>
+  <p style="font-size:12px;color:#64748b;margin-bottom:8px">Set <code style="color:#94a3b8">"stream": true</code> to receive Server-Sent Events. Each chunk is an OpenAI <code style="color:#94a3b8">chat.completion.chunk</code>; the stream ends with <code style="color:#94a3b8">data: [DONE]</code>:</p>
+  <div style="background:rgba(0,0,0,0.3);padding:12px 16px;border-radius:10px;font-family:mono;font-size:12px;color:#a5b4fc;white-space:pre;overflow-x:auto">data: {"choices":[{"delta":{"content":"Halo"}}]}
+
+data: {"choices":[{"delta":{"content":"!"}}]}
+
+data: [DONE]</div>
 </div>
 
 <div class="glass" style="padding:20px;margin-bottom:16px">
@@ -70,14 +106,14 @@
         <th style="text-align:left;padding:10px 12px;color:#64748b;font-weight:600">Description</th>
       </tr>
       <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
-        <td style="padding:10px 12px"><code>model</code></td>
+        <td style="padding:10px 12px"><code>model</code> <span style="color:#f87171;font-size:10px">required</span></td>
         <td style="padding:10px 12px;color:#94a3b8">string</td>
-        <td style="padding:10px 12px;color:#64748b">Model ID (e.g., glm-5-turbo, glm-5.3, deepseek-v4-pro)</td>
+        <td style="padding:10px 12px;color:#64748b">Model ID (e.g., glm-5.3, glm-5.3-flash, deepseek-v4-pro)</td>
       </tr>
       <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
-        <td style="padding:10px 12px"><code>messages</code></td>
+        <td style="padding:10px 12px"><code>messages</code> <span style="color:#f87171;font-size:10px">required</span></td>
         <td style="padding:10px 12px;color:#94a3b8">array</td>
-        <td style="padding:10px 12px;color:#64748b">Chat messages [{role, content}]</td>
+        <td style="padding:10px 12px;color:#64748b">Chat messages [{role, content}] — role: system / user / assistant</td>
       </tr>
       <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
         <td style="padding:10px 12px"><code>stream</code></td>
@@ -87,19 +123,54 @@
       <tr>
         <td style="padding:10px 12px"><code>max_tokens</code></td>
         <td style="padding:10px 12px;color:#94a3b8">int</td>
-        <td style="padding:10px 12px;color:#64748b">Maximum tokens in response</td>
+        <td style="padding:10px 12px;color:#64748b">Maximum tokens in response (passed through to the model)</td>
       </tr>
     </table>
   </div>
 </div>
 
-<div class="glass" style="padding:20px">
-  <h3 style="font-size:15px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px">
+<div class="glass" style="padding:20px;margin-bottom:16px">
+  <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px">
+    <i class="fas fa-tachometer-alt" style="color:#818cf8"></i> Rate Limit
+  </h3>
+  <p style="font-size:12px;color:#64748b;margin-bottom:8px">Requests are limited to <b style="color:#e2e8f0">1 request per 1.5 seconds</b> (burst up to 3). Exceeding it returns <code style="color:#94a3b8">429 Too Many Requests</code> — add a delay or retry with backoff on the client side.</p>
+</div>
+
+<div class="glass" style="padding:20px;margin-bottom:16px">
+  <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px">
     <i class="fas fa-shield-alt" style="color:#818cf8"></i> Authentication
   </h3>
-  <p style="font-size:12px;color:#64748b;margin-bottom:8px">If an API key is configured in Settings, include it as a header:</p>
+  <p style="font-size:12px;color:#64748b">If an API key is configured in Settings, include it as a header on every endpoint:</p>
   <div style="background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;font-family:mono;font-size:12px;color:#60a5fa">
-    curl -H "Authorization: Bearer sk-your-key-here" http://localhost:8787/v1/models
+    Authorization: Bearer sk-your-key-here
+  </div>
+</div>
+
+<div class="glass" style="padding:20px">
+  <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px">
+    <i class="fas fa-exclamation-triangle" style="color:#fbbf24"></i> Errors &amp; Failover
+  </h3>
+  <p style="font-size:12px;color:#64748b;margin-bottom:8px">Errors follow the OpenAI format. When one account fails (e.g. quota used up), autoclawpi automatically retries with the next account in the pool:</p>
+  <div style="background:rgba(0,0,0,0.3);padding:12px 16px;border-radius:10px;font-family:mono;font-size:12px;color:#a5b4fc;white-space:pre;overflow-x:auto">{"error":{"message":"...","type":"..."}}</div>
+  <div style="overflow-x:auto;margin-top:12px">
+    <table style="width:100%;font-size:13px;border-collapse:collapse">
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.06)">
+        <th style="text-align:left;padding:10px 12px;color:#64748b;font-weight:600">Status</th>
+        <th style="text-align:left;padding:10px 12px;color:#64748b;font-weight:600">Meaning</th>
+      </tr>
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
+        <td style="padding:10px 12px"><code>401</code></td>
+        <td style="padding:10px 12px;color:#64748b">Invalid local API key (check Settings)</td>
+      </tr>
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
+        <td style="padding:10px 12px"><code>429</code></td>
+        <td style="padding:10px 12px;color:#64748b">Local rate limit exceeded (1 req / 1.5s)</td>
+      </tr>
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
+        <td style="padding:10px 12px"><code>503</code> <code>all_accounts_failed</code></td>
+        <td style="padding:10px 12px;color:#64748b">All accounts tried and failed (quota/token issues — check Request Logs for per-account reasons)</td>
+      </tr>
+    </table>
   </div>
 </div>
 {{end}}

@@ -1,9 +1,9 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"embed"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -40,25 +40,71 @@ func WithPassword(pwd string) Option {
 	return func(s *Server) { s.password = pwd }
 }
 
-// WithAPIKey menyimpan API key untuk fetch models internal.
+// WithAPIKey menyimpan API key legacy untuk fetch models internal.
+// Jika kosong, internalFetchAuth fallback ke key pertama dari Settings.
 func WithAPIKey(key string) Option {
 	return func(s *Server) { s.apiKey = key }
+}
+
+// internalFetchAuth mengembalikan nilai header Authorization untuk request
+// internal web panel ke /v1/models: key legacy jika ada, kalau tidak key
+// pertama dari daftar api_keys yang dikelola via Settings.
+func (s *Server) internalFetchAuth() string {
+	if s.apiKey != "" {
+		return s.apiKey
+	}
+	data, _ := db.GetConfig("api_keys")
+	if data != "" {
+		var keys []struct {
+			Key string `json:"key"`
+		}
+		if json.Unmarshal([]byte(data), &keys) == nil {
+			for _, k := range keys {
+				if k.Key != "" {
+					return k.Key
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// templateFuncs mengembalikan FuncMap lengkap untuk semua template.
+// Dipakai baik oleh New() (parse sekali) maupun renderTemplate() (parse ulang
+// per-request untuk mode SPA/HTMX), sehingga semua template punya func yang sama.
+func templateFuncs() template.FuncMap {
+	return template.FuncMap{
+		"pageTitle": pageTitle,
+		"localTime": func(utc string) string {
+			if t, ok := client.ParseUTC(utc); ok {
+				return t.Local().Format("15:04:05")
+			}
+			if len(utc) >= 19 {
+				return utc[11:19]
+			}
+			return utc
+		},
+		"localDate": func(utc string) string {
+			if t, ok := client.ParseUTC(utc); ok {
+				return t.Local().Format("02 Jan 2006 15:04:05 MST")
+			}
+			return utc
+		},
+	}
 }
 
 // New membuat web panel server baru.
 func New(cl *client.Client, opts ...Option) *Server {
 	s := &Server{
 		mux:      http.NewServeMux(),
-		strategy: "round-robin",
+		strategy: db.GetStrategy(), // load strategi tersimpan dari DB
 		cl:       cl,
 	}
 	for _, o := range opts {
 		o(s)
 	}
 
-	tmpl := template.New("").Funcs(template.FuncMap{
-		"pageTitle": pageTitle,
-	})
+	tmpl := template.New("").Funcs(templateFuncs())
 	tmpl = template.Must(tmpl.ParseFS(templateFS, "templates/*.html"))
 	s.tmpl = tmpl
 
@@ -82,6 +128,7 @@ func New(cl *client.Client, opts ...Option) *Server {
 	s.mux.HandleFunc("/health", s.authMiddleware(s.handleHealth))
 	s.mux.HandleFunc("/health/run", s.authMiddleware(s.handleHealthRun))
 	s.mux.HandleFunc("/logs", s.authMiddleware(s.handleLogs))
+	s.mux.HandleFunc("/logs/clear", s.authMiddleware(s.handleLogsClear))
 	s.mux.HandleFunc("/auth/callback-zai", s.handleOAuthCallback)
 	s.mux.HandleFunc("/auth/callback-google", s.handleOAuthCallback)
 	s.mux.HandleFunc("/login", s.handleLogin)
@@ -99,6 +146,11 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		if s.password != "" {
 			cookie, err := r.Cookie("panel_auth")
 			if err != nil || cookie.Value != s.password {
+				// SPA request: balas 401 JSON agar router JS redirect ke login
+				if r.Header.Get("X-SPA") == "1" {
+					writeJSON(w, http.StatusUnauthorized, map[string]any{"redirect": "/login"})
+					return
+				}
 				http.Redirect(w, r, "/login", http.StatusSeeOther)
 				return
 			}
@@ -107,7 +159,7 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) renderTemplate(w http.ResponseWriter, page string, currentPage string, data any) {
+func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, page string, currentPage string, data any) {
 	d := map[string]any{
 		"Page":  currentPage,
 		"Title": pageTitle(currentPage),
@@ -119,7 +171,31 @@ func (s *Server) renderTemplate(w http.ResponseWriter, page string, currentPage 
 			}
 		}
 	}
-	tmpl := template.Must(template.Must(template.New("").Funcs(template.FuncMap{"pageTitle": pageTitle}).Parse(s.tmplStr("base.html"))).Parse(s.tmplStr(page)))
+	tmpl := template.Must(template.Must(template.New("").Funcs(templateFuncs()).Parse(s.tmplStr("base.html"))).Parse(s.tmplStr(page)))
+
+	isSPA := r != nil && r.Header.Get("X-SPA") == "1"
+	isHTMX := r != nil && r.Header.Get("HX-Request") == "true"
+	if isSPA || isHTMX {
+		var buf bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		if isSPA {
+			// SPA mode: kirim fragment sebagai JSON untuk client-side router
+			writeJSON(w, http.StatusOK, map[string]any{
+				"title": pageTitle(currentPage),
+				"page":  currentPage,
+				"html":  buf.String(),
+			})
+			return
+		}
+		// HTMX mode: kirim fragment content saja
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(buf.Bytes())
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	err := tmpl.ExecuteTemplate(w, "base", d)
 	if err != nil {
@@ -236,18 +312,30 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		views = append(views, accountView{Account: a, LastCheckinDate: lastDate})
 	}
 	models := fetchModels("http://"+r.Host+"/v1/models", s.apiKey)
-	totalReq, totalTokens, totalCost, _ := db.LogStats()
-	s.renderTemplate(w, "dashboard.html", "dashboard", map[string]any{
+	totalReq, totalTokens, totalCost, _ := db.LogStats("today")
+	s.renderTemplate(w, r, "dashboard.html", "dashboard", map[string]any{
 		"Accounts":       views,
 		"TotalAccounts":  len(accounts),
 		"ActiveAccounts": activeCount,
 		"TotalPoints":    totalPts,
+		// 1 point = 10.000 tokens kuota inference; format ringkas (467.2M)
+		"TotalPointTokens": formatPointTokens(totalPts),
 		"CheckedInToday": 0,
 		"Models":         models,
 		"TotalReq":       totalReq,
 		"TotalTokens":    totalTokens,
 		"TotalCost":      totalCost,
 	})
+}
+
+// formatPointTokens mengonversi points ke kuota token (1 pt = 10k tokens)
+// dengan format ringkas: >= 1 juta tampil sebagai X.YM, sisanya pakai pemisah ribuan.
+func formatPointTokens(pts int) string {
+	tokens := pts * 10000
+	if tokens >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(tokens)/1_000_000)
+	}
+	return fmt.Sprintf("%d", tokens)
 }
 
 // fetchBalanceDashboard ambil balance dari server. Mirip fetchBalance di checkin.go
@@ -347,7 +435,7 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	accounts, _ := db.ListAccounts()
-	s.renderTemplate(w, "accounts.html", "accounts", map[string]any{"Accounts": accounts})
+	s.renderTemplate(w, r, "accounts.html", "accounts", map[string]any{"Accounts": accounts})
 }
 
 func parseInt64(s string) (int64, error) {
@@ -370,56 +458,33 @@ func (s *Server) handleAccountDetail(w http.ResponseWriter, r *http.Request, id 
 	balance := refreshBalance(id)
 	history, _ := db.ListCheckinLog(id, 20)
 
-	// Decode JWT to get user info
-	userEmail, userID := decodeJWT(a.AccessToken)
-
-	// Update DB if we got user info from JWT
-	if userEmail != "" && a.Name == "" {
-		a.Name = userEmail
-		a.UserName = userEmail
-		a.UserID = userID
-		_ = db.UpdateAccount(a)
+	// Decode JWT untuk ambil email (backfill akun lama yang belum punya email)
+	userEmail, userID := client.DecodeJWT(a.AccessToken)
+	if userEmail != "" {
+		updated := false
+		if a.Email == "" {
+			a.Email = userEmail
+			updated = true
+		}
+		if a.Name == "" {
+			a.Name = userEmail
+			a.UserName = userEmail
+			updated = true
+		}
+		if a.UserID == "" && userID != "" {
+			a.UserID = userID
+			updated = true
+		}
+		if updated {
+			_ = db.UpdateAccount(a)
+		}
 	}
 
-	s.renderTemplate(w, "account.html", "accounts", map[string]any{
+	s.renderTemplate(w, r, "account.html", "accounts", map[string]any{
 		"Account":        a,
 		"Balance":        balance,
 		"CheckinHistory": history,
 	})
-}
-
-// decodeJWT extracts user info from a JWT token (second segment, base64).
-func decodeJWT(token string) (email, userID string) {
-	// Strip "Bearer " prefix
-	raw := strings.TrimPrefix(token, "Bearer ")
-	parts := strings.Split(raw, ".")
-	if len(parts) < 2 {
-		return "", ""
-	}
-	// Add padding
-	payload := parts[1]
-	switch len(payload) % 4 {
-	case 2:
-		payload += "=="
-	case 3:
-		payload += "="
-	}
-	decoded, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		return "", ""
-	}
-	var data struct {
-		UserID any    `json:"user_id"`
-		JTI    string `json:"jti"`
-	}
-	if err := json.Unmarshal(decoded, &data); err != nil {
-		return "", ""
-	}
-	uid := ""
-	if data.UserID != nil {
-		uid = fmt.Sprint(data.UserID)
-	}
-	return data.JTI, uid
 }
 
 func refreshBalance(id int64) int {
@@ -435,7 +500,7 @@ func (s *Server) handleAccountsLogin(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.renderTemplate(w, "login.html", "login", map[string]any{"Flow": "start"})
+	s.renderTemplate(w, r, "login.html", "login", map[string]any{"Flow": "start"})
 }
 
 func (s *Server) handleAccountsLoginStart(w http.ResponseWriter, r *http.Request) {
@@ -448,7 +513,7 @@ func (s *Server) handleAccountsLoginStart(w http.ResponseWriter, r *http.Request
 		prefix = capCfg.Data.Prefix
 		sceneID = capCfg.Data.SceneID
 	}
-	s.renderTemplate(w, "login.html", "login", map[string]any{
+	s.renderTemplate(w, r, "login.html", "login", map[string]any{
 		"Flow":    "captcha",
 		"Prefix":  prefix,
 		"SceneID": sceneID,
@@ -563,7 +628,16 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	if out.Data.UserID != nil {
 		userID = fmt.Sprint(out.Data.UserID)
 	}
-	acctID, err := db.AddAccount(out.Data.UserName, out.Data.AccessToken, out.Data.RefreshToken, vendor, userID, out.Data.UserName, deviceID)
+	// Extract email dari JWT access token
+	email, jwtUserID := client.DecodeJWT(out.Data.AccessToken)
+	if userID == "" && jwtUserID != "" {
+		userID = jwtUserID
+	}
+	name := out.Data.UserName
+	if name == "" && email != "" {
+		name = email
+	}
+	acctID, err := db.AddAccount(name, out.Data.AccessToken, out.Data.RefreshToken, vendor, userID, out.Data.UserName, deviceID, email)
 	if err != nil {
 		http.Error(w, "Save failed: "+err.Error(), 500)
 		return
@@ -587,19 +661,24 @@ func (s *Server) handleAccountsImport(w http.ResponseWriter, r *http.Request) {
 		accessToken := r.FormValue("access_token")
 		refreshToken := r.FormValue("refresh_token")
 		if accessToken == "" {
-			s.renderTemplate(w, "import.html", "accounts", map[string]any{"Error": "Access token required", "Name": name})
+			s.renderTemplate(w, r, "import.html", "accounts", map[string]any{"Error": "Access token required", "Name": name})
 			return
 		}
 		deviceID := "import-" + fmt.Sprintf("%x", time.Now().UnixNano())
-		_, err := db.AddAccount(name, accessToken, refreshToken, "zai", "", "", deviceID)
+		// Extract email dari JWT access token
+		email, jwtUserID := client.DecodeJWT(accessToken)
+		if name == "" && email != "" {
+			name = email
+		}
+		_, err := db.AddAccount(name, accessToken, refreshToken, "zai", jwtUserID, "", deviceID, email)
 		if err != nil {
-			s.renderTemplate(w, "import.html", "accounts", map[string]any{"Error": err.Error(), "Name": name})
+			s.renderTemplate(w, r, "import.html", "accounts", map[string]any{"Error": err.Error(), "Name": name})
 			return
 		}
 		http.Redirect(w, r, "/accounts", http.StatusSeeOther)
 		return
 	}
-	s.renderTemplate(w, "import.html", "accounts", nil)
+	s.renderTemplate(w, r, "import.html", "accounts", nil)
 }
 
 // handleClaim100MForAccount handles /accounts/{id}/claim (HTMX button).
@@ -672,7 +751,8 @@ func (s *Server) doClaim100M(w http.ResponseWriter, r *http.Request, a *db.Accou
 
 func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	accounts, _ := db.ListAccounts()
-	s.renderTemplate(w, "checkin.html", "checkin", map[string]any{"Accounts": accounts})
+	auto := r.URL.Query().Get("auto") == "1"
+	s.renderTemplate(w, r, "checkin.html", "checkin", map[string]any{"Accounts": accounts, "Auto": auto})
 }
 
 func (s *Server) handleCheckinRun(w http.ResponseWriter, r *http.Request) {
@@ -687,6 +767,7 @@ func (s *Server) handleCheckinRun(w http.ResponseWriter, r *http.Request) {
 		AccountName   string       `json:"account_name"`
 		Status        string       `json:"status"`
 		BalanceBefore int          `json:"balance_before"`
+		Claimed       int          `json:"claimed"`
 		BalanceAfter  int          `json:"balance_after"`
 		Tasks         []taskResult `json:"tasks"`
 	}
@@ -703,12 +784,24 @@ func (s *Server) handleCheckinRun(w http.ResponseWriter, r *http.Request) {
 		if !a.Active {
 			continue
 		}
+		// Fetch saldo real-time sebelum check-in (seperti versi CLI)
+		ctxB, cancelB := context.WithTimeout(r.Context(), 15*time.Second)
+		balanceBefore := fetchBalance(ctxB, a.AccessToken, s.cl)
+		cancelB()
+		if balanceBefore <= 0 {
+			balanceBefore = a.Points // fallback ke saldo DB lokal
+		} else {
+			_ = db.UpdatePoints(a.ID, balanceBefore) // sinkronkan DB lokal
+		}
+
 		ar := accountResult{
 			AccountName:   ifEmpty(a.Name, fmt.Sprintf("Account #%d", a.ID)),
-			BalanceBefore: a.Points,
+			BalanceBefore: balanceBefore,
 			Status:        "success",
 		}
 		for _, t := range tasks {
+			// Skip task yang sudah tercatat di-claim hari ini —
+			// tidak perlu mengirim request ke upstream.
 			existing, _ := db.GetCheckinLog(a.ID, today, t.ID)
 			if existing != nil {
 				ar.Tasks = append(ar.Tasks, taskResult{Name: t.Name, Points: existing.Points, Success: true, Status: "already"})
@@ -729,15 +822,49 @@ func (s *Server) handleCheckinRun(w http.ResponseWriter, r *http.Request) {
 			}
 			ar.Tasks = append(ar.Tasks, taskResult{Name: t.Name, Points: points, Success: true, Status: "claimed"})
 			db.AddCheckinLog(a.ID, today, t.ID, points, "success", a.DeviceID)
-			db.UpdatePoints(a.ID, a.Points+points)
-			ar.BalanceAfter += points
 		}
-		if ar.BalanceAfter == 0 {
-			ar.BalanceAfter = ar.BalanceBefore
+
+		// Fetch saldo real-time setelah check-in — mencerminkan saldo server
+		// sebenarnya termasuk klaim yang terjadi di luar autoclawpi.
+		ctxA, cancelA := context.WithTimeout(r.Context(), 15*time.Second)
+		balanceAfter := fetchBalance(ctxA, a.AccessToken, s.cl)
+		cancelA()
+		if balanceAfter <= 0 {
+			// fallback: saldo sebelum + total klaim run ini
+			balanceAfter = ar.BalanceBefore
+			for _, t := range ar.Tasks {
+				balanceAfter += t.Points
+			}
+		} else {
+			_ = db.UpdatePoints(a.ID, balanceAfter)
+		}
+		ar.BalanceAfter = balanceAfter
+		ar.Claimed = ar.BalanceAfter - ar.BalanceBefore
+		if ar.Claimed < 0 {
+			// saldo turun (mis. ada pemakaian token) — pakai jumlah klaim task
+			for _, t := range ar.Tasks {
+				ar.Claimed += t.Points
+			}
+		}
+		if ar.BalanceAfter < ar.BalanceBefore {
+			ar.Status = "partial"
 		}
 		results = append(results, ar)
 	}
-	s.renderTemplate(w, "checkin.html", "checkin", map[string]any{
+	if isHTMX := r.Header.Get("HX-Request") == "true"; isHTMX {
+		// HTMX: kirim HANYA blok hasil (tanpa header + tombol) —
+		// mencegah tombol Check-In All terduplikasi di dalam #checkin-results.
+		tmpl := template.Must(template.New("").Funcs(templateFuncs()).Parse(s.tmplStr("checkin.html")))
+		var buf bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&buf, "results", map[string]any{"Results": results}); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(buf.Bytes())
+		return
+	}
+	s.renderTemplate(w, r, "checkin.html", "checkin", map[string]any{
 		"Results": results,
 	})
 }
@@ -753,31 +880,12 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	apikey, _ := db.GetConfig("api_key")
 	apiKeys := loadAPIKeys()
 	accounts, _ := db.ListAccounts()
-	// Fetch models with API key
-	models := []string{}
-	modelsReq, _ := http.NewRequest("GET", "http://"+r.Host+"/v1/models", nil)
-	if s.apiKey != "" {
-		modelsReq.Header.Set("Authorization", "Bearer "+s.apiKey)
-	}
-	resp, err := http.DefaultClient.Do(modelsReq)
-	if err == nil {
-		defer resp.Body.Close()
-		var data struct {
-			Data []struct {
-				ID string `json:"id"`
-			} `json:"data"`
-		}
-		json.NewDecoder(resp.Body).Decode(&data)
-		for _, m := range data.Data {
-			models = append(models, m.ID)
-		}
-	}
-	s.renderTemplate(w, "settings.html", "settings", map[string]any{
+	// Tanpa fetch daftar model — tampilan model cukup di halaman API Docs.
+	s.renderTemplate(w, r, "settings.html", "settings", map[string]any{
 		"Strategy":      s.strategy,
 		"DBPath":        "~/.autoclawpi/autoclawpi.db",
 		"DBSize":        "OK",
 		"TotalAccounts": len(accounts),
-		"Models":        models,
 		"APIKey":        apikey,
 		"APIKeys":       apiKeys,
 	})
@@ -816,10 +924,16 @@ func (s *Server) handleSettingsPassword(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleSettingsStrategy(w http.ResponseWriter, r *http.Request) {
 	strat := r.FormValue("strategy")
-	if strat != "" {
-		s.strategy = strat
+	if !db.ValidStrategy(strat) {
+		w.Write([]byte(`<span style="color:#f87171">Strategy tidak valid</span>`))
+		return
 	}
-	w.Write([]byte(`<span style="color:#34d399">Strategy updated</span>`))
+	if err := db.SetStrategy(strat); err != nil {
+		w.Write([]byte(`<span style="color:#f87171">Gagal menyimpan: ` + template.HTMLEscapeString(err.Error()) + `</span>`))
+		return
+	}
+	s.strategy = strat
+	w.Write([]byte(`<span style="color:#34d399">Strategy updated — aktif untuk request berikutnya</span>`))
 }
 
 func (s *Server) handleSettingsAPIKey(w http.ResponseWriter, r *http.Request) {
@@ -853,24 +967,75 @@ func (s *Server) handleSettingsAPIKeyDelete(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	logs, _ := db.ListLogs(100)
-	totalReq, totalTokens, totalCost, _ := db.LogStats()
-	s.renderTemplate(w, "logs.html", "logs", map[string]any{
+	// Filter rentang waktu: today (default), 7d, 30d, 60d, all
+	rangeParam := r.URL.Query().Get("range")
+	switch rangeParam {
+	case "", "today", "7d", "30d", "60d", "all":
+	default:
+		rangeParam = "today"
+	}
+	if rangeParam == "" {
+		rangeParam = "today"
+	}
+	logs, _ := db.ListLogs(100, rangeParam)
+	totalReq, totalTokens, totalCost, _ := db.LogStats(rangeParam)
+	rangeLabels := map[string]string{
+		"today": "Today",
+		"7d":    "7 Days",
+		"30d":   "30 Days",
+		"60d":   "60 Days",
+		"all":   "All Time",
+	}
+	s.renderTemplate(w, r, "logs.html", "logs", map[string]any{
 		"Logs":       logs,
 		"TotalReq":   totalReq,
 		"TotalTokens": totalTokens,
 		"TotalCost":  totalCost,
+		"Range":      rangeParam,
+		"RangeLabel": rangeLabels[rangeParam],
+	})
+}
+
+// handleLogsClear menghapus log request sesuai filter periode yang sedang aktif.
+// Endpoint dipanggil via HTMX dari tombol Clear di halaman Logs.
+func (s *Server) handleLogsClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rangeParam := r.FormValue("range")
+	switch rangeParam {
+	case "today", "7d", "30d", "60d", "all":
+	default:
+		rangeParam = "today"
+	}
+	if _, err := db.ClearLogs(rangeParam); err != nil {
+		http.Error(w, "gagal menghapus logs: "+err.Error(), 500)
+		return
+	}
+	// Tanpa banner konfirmasi — langsung kembalikan seluruh area logs
+	// (daftar kosong + statistik ter-update) sebagai response swap.
+	logs, _ := db.ListLogs(100, rangeParam)
+	totalReq, totalTokens, totalCost, _ := db.LogStats(rangeParam)
+	rangeLabels := map[string]string{"today": "Today", "7d": "7 Days", "30d": "30 Days", "60d": "60 Days", "all": "All Time"}
+	s.renderTemplate(w, r, "logs.html", "logs", map[string]any{
+		"Logs":        logs,
+		"TotalReq":    totalReq,
+		"TotalTokens": totalTokens,
+		"TotalCost":   totalCost,
+		"Range":       rangeParam,
+		"RangeLabel":  rangeLabels[rangeParam],
 	})
 }
 
 func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
-	models := fetchModels("http://"+r.Host+"/v1/models", s.apiKey)
-	s.renderTemplate(w, "docs.html", "docs", map[string]any{"Models": models})
+	models := fetchModels("http://"+r.Host+"/v1/models", s.internalFetchAuth())
+	s.renderTemplate(w, r, "docs.html", "docs", map[string]any{"Models": models})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	accounts, _ := db.ListAccounts()
-	s.renderTemplate(w, "health.html", "health", map[string]any{"Accounts": accounts})
+	s.renderTemplate(w, r, "health.html", "health", map[string]any{"Accounts": accounts})
 }
 
 func (s *Server) handleHealthRun(w http.ResponseWriter, r *http.Request) {
@@ -966,7 +1131,16 @@ func handleOAuthCallbackRedirect(w http.ResponseWriter, r *http.Request, cl *cli
 	if out.Data.UserID != nil {
 		userID = fmt.Sprint(out.Data.UserID)
 	}
-	acctID, err := db.AddAccount(out.Data.UserName, out.Data.AccessToken, out.Data.RefreshToken, vendor, userID, out.Data.UserName, deviceID)
+	// Extract email dari JWT access token
+	email, jwtUserID := client.DecodeJWT(out.Data.AccessToken)
+	if userID == "" && jwtUserID != "" {
+		userID = jwtUserID
+	}
+	name := out.Data.UserName
+	if name == "" && email != "" {
+		name = email
+	}
+	acctID, err := db.AddAccount(name, out.Data.AccessToken, out.Data.RefreshToken, vendor, userID, out.Data.UserName, deviceID, email)
 	if err != nil {
 		http.Error(w, "Save failed: "+err.Error(), 500)
 		return

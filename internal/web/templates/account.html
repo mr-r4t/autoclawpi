@@ -30,6 +30,10 @@
         <span style="color:#e2e8f0;font-weight:500">{{if .Account.UserID}}{{.Account.UserID}}{{else}}<span style="color:#475569">—</span>{{end}}</span>
       </div>
       <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04)">
+        <span style="color:#64748b">Email</span>
+        <span style="color:#e2e8f0;font-weight:500">{{if .Account.Email}}{{.Account.Email}}{{else}}<span style="color:#475569">—</span>{{end}}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04)">
         <span style="color:#64748b">Device ID</span>
         <span style="color:#e2e8f0;font-weight:500;font-size:11px;font-family:mono">{{.Account.DeviceID}}</span>
       </div>
@@ -58,7 +62,7 @@
     <div style="display:flex;gap:10px;justify-content:center;margin-top:auto;flex-wrap:wrap">
       <button class="btn" style="padding:8px 18px;font-size:12px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#0f0f14;font-weight:600"
               hx-post="/accounts/{{.Account.ID}}/claim" hx-target="#claim-result" hx-swap="innerHTML"><i class="fas fa-gift"></i> Claim 100M</button>
-      <button class="btn btn-success" style="padding:8px 18px;font-size:12px" hx-post="/accounts/{{.Account.ID}}/refresh" hx-target="closest div.glass" hx-swap="outerHTML"><i class="fas fa-sync"></i> Refresh</button>
+      <button class="btn btn-success" style="padding:8px 18px;font-size:12px" onclick="refreshAccount({{.Account.ID}})"><i class="fas fa-sync"></i> Refresh</button>
       <a href="/checkin" class="btn btn-primary" style="padding:8px 18px;font-size:12px"><i class="fas fa-check-double"></i> Check-In</a>
     </div>
     <div id="claim-result" style="margin-top:12px;text-align:center"></div>
@@ -79,7 +83,7 @@
         </div>
         <div>
           <div style="font-size:13px;font-weight:600;color:#f1f5f9">{{.TaskID}}</div>
-          <div style="font-size:11px;color:#64748b;margin-top:2px">{{slice .CreatedAt 0 10}} {{slice .CreatedAt 11 19}}</div>
+          <div style="font-size:11px;color:#64748b;margin-top:2px">{{localDate .CreatedAt}}</div>
         </div>
       </div>
       <span class="badge {{if gt .Points 0}}badge-success{{else}}badge-info{{end}}" style="font-size:12px">
@@ -90,4 +94,13 @@
   </div>
 </div>
 {{end}}
+<script>
+function refreshAccount(id){
+  var btn=event.target.closest('button');var old=btn.innerHTML;
+  btn.disabled=true;btn.innerHTML='<i class="fas fa-spinner fa-spin"></i> Refreshing...';
+  fetch('/accounts/'+id+'/refresh',{method:'POST',credentials:'same-origin'})
+  .then(function(){ if(window.spaNavigate){window.spaNavigate('/accounts/'+id,true);}else{location.reload();} })
+  .catch(function(){ btn.disabled=false;btn.innerHTML=old; });
+}
+</script>
 {{end}}

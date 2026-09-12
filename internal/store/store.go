@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/hirotomasato/autoclawpi/internal/client"
 	"github.com/hirotomasato/autoclawpi/internal/db"
 )
 
@@ -16,6 +17,7 @@ type Creds struct {
 	RefreshToken string `json:"refresh,omitempty"`
 	UserID       string `json:"user_id,omitempty"`
 	UserName     string `json:"user_name,omitempty"`
+	Email        string `json:"email,omitempty"`
 	Provider     string `json:"provider,omitempty"`
 	DeviceID     string `json:"device_id,omitempty"`
 	SavedAt      string `json:"saved_at,omitempty"`
@@ -37,6 +39,15 @@ func Save(c *Creds) error {
 		}
 		c.DeviceID = h + "-autoclawpi"
 	}
+	// Auto-extract email dari JWT access token jika belum ada
+	if c.Email == "" && c.AccessToken != "" {
+		if email, jwtUserID := client.DecodeJWT(c.AccessToken); email != "" {
+			c.Email = email
+			if c.UserID == "" && jwtUserID != "" {
+				c.UserID = jwtUserID
+			}
+		}
+	}
 	if existing != nil {
 		// update existing
 		existing.AccessToken = c.AccessToken
@@ -44,12 +55,17 @@ func Save(c *Creds) error {
 		existing.Provider = c.Provider
 		existing.UserID = c.UserID
 		existing.UserName = c.UserName
+		existing.Email = c.Email
 		existing.DeviceID = c.DeviceID
 		existing.LastUsedAt = time.Now().UTC().Format(time.RFC3339)
 		return db.UpdateAccount(existing)
 	}
 	// create new
-	_, err = db.AddAccount("default", c.AccessToken, c.RefreshToken, c.Provider, c.UserID, c.UserName, c.DeviceID)
+	name := c.UserName
+	if name == "" && c.Email != "" {
+		name = c.Email
+	}
+	_, err = db.AddAccount(name, c.AccessToken, c.RefreshToken, c.Provider, c.UserID, c.UserName, c.DeviceID, c.Email)
 	return err
 }
 
@@ -67,6 +83,7 @@ func Load() (*Creds, error) {
 		RefreshToken: a.RefreshToken,
 		UserID:       a.UserID,
 		UserName:     a.UserName,
+		Email:        a.Email,
 		Provider:     a.Provider,
 		DeviceID:     a.DeviceID,
 		SavedAt:      a.CreatedAt,

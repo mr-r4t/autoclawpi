@@ -27,7 +27,8 @@
       <div style="width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#f59e0b,#d97706);display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;box-shadow:0 4px 12px rgba(251,191,36,0.2)"><i class="fas fa-coins"></i></div>
       <div class="stat-label">Total Points</div>
     </div>
-    <div class="stat-value">{{.TotalPoints}}</div>
+    <div class="stat-value">{{.TotalPoints}} <span style="font-size:14px;font-weight:600;color:#fbbf24">pts</span></div>
+    <div style="font-size:12px;color:#64748b;margin-top:4px"><i class="fas fa-bolt" style="color:#fbbf24;font-size:10px"></i> = {{.TotalPointTokens}} tokens <span style="color:#475569">(1 pt = 10k tokens)</span></div>
   </div>
   <div class="glass glow" style="padding:20px;position:relative;overflow:hidden">
     <div style="position:absolute;top:-20px;right:-20px;width:80px;height:80px;border-radius:50%;background:rgba(96,165,250,0.06)"></div>
@@ -58,7 +59,7 @@
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
   <h2 style="font-size:16px;font-weight:700;letter-spacing:-.01em">Accounts</h2>
   <div style="display:flex;gap:8px">
-    <a href="/checkin" class="btn btn-success" style="font-size:12px;padding:7px 14px"><i class="fas fa-check-double"></i> Check-In All</a>
+    <a href="/checkin?auto=1" class="btn btn-success" style="font-size:12px;padding:7px 14px"><i class="fas fa-check-double"></i> Check-In All</a>
     <a href="/accounts" class="btn btn-ghost" style="font-size:12px;padding:7px 14px"><i class="fas fa-eye"></i> Manage</a>
   </div>
 </div>

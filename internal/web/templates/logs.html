@@ -1,5 +1,29 @@
 {{define "content"}}
-<div style="margin-bottom:24px;display:flex;align-items:center;justify-content:space-between">
+<style>
+  /* Animasi tombol Refresh/Clear saat request HTMX berjalan */
+  #logs-content .btn-anim {
+    transition: transform .15s ease, opacity .15s ease;
+  }
+  #logs-content .btn-anim:active {
+    transform: scale(.94);
+  }
+  /* Saat HTMX request berjalan (class htmx-request otomatis dari htmx) */
+  #logs-content .btn-anim.htmx-request {
+    opacity: .6;
+    pointer-events: none;
+    transform: scale(.96);
+  }
+  #logs-content .btn-anim.htmx-request .fa-trash {
+    display: inline-block;
+    animation: logs-icon-spin .8s linear infinite;
+  }
+  @keyframes logs-icon-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+</style>
+<div id="logs-content" hx-get="/logs?range={{.Range}}" hx-trigger="every 3s [!document.hidden]" hx-target="#logs-content" hx-swap="outerHTML">
+<div style="margin-bottom:24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
   <div>
     <h1 style="font-size:22px;font-weight:700;margin-bottom:4px">Request Logs</h1>
     <p style="color:#64748b;font-size:14px">Live API request log — terminal view</p>
@@ -20,10 +44,29 @@
   </div>
 </div>
 
+<div style="margin-bottom:16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+  <i class="fas fa-filter" style="color:#475569;font-size:13px"></i>
+  <a href="/logs?range=today" class="log-range-btn {{if eq .Range "today"}}active{{end}}">Today</a>
+  <a href="/logs?range=7d" class="log-range-btn {{if eq .Range "7d"}}active{{end}}">7D</a>
+  <a href="/logs?range=30d" class="log-range-btn {{if eq .Range "30d"}}active{{end}}">30D</a>
+  <a href="/logs?range=60d" class="log-range-btn {{if eq .Range "60d"}}active{{end}}">60D</a>
+  <a href="/logs?range=all" class="log-range-btn {{if eq .Range "all"}}active{{end}}">All</a>
+  <span style="font-size:11px;color:#475569;margin-left:4px">{{.RangeLabel}} · last {{len .Logs}} requests</span>
+  <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+    <form hx-post="/logs/clear" hx-target="#logs-content" hx-swap="outerHTML" hx-confirm="Hapus semua log untuk filter '{{.RangeLabel}}'? Tindakan ini tidak bisa dibatalkan." hx-disabled-elt="this">
+      <input type="hidden" name="range" value="{{.Range}}">
+      <button class="btn-anim" type="submit" style="display:inline-flex;align-items:center;gap:6px;padding:5px 12px;font-size:11px;border-radius:8px;border:1px solid rgba(248,113,113,0.3);background:rgba(248,113,113,0.1);color:#f87171;cursor:pointer;font-family:inherit">
+        <i class="fas fa-trash"></i> Clear {{.RangeLabel}}
+      </button>
+    </form>
+  </div>
+</div>
+<div id="clear-msg"></div>
+
 {{if .Logs}}
-<div style="background:#050508;border:1px solid rgba(255,255,255,0.06);border-radius:14px;padding:14px;font-family:'JetBrains Mono','Fira Code','Cascadia Code',monospace;font-size:12px;line-height:1.7;overflow:auto;max-height:calc(100vh - 200px)">
+<div id="logs-term" style="background:#050508;border:1px solid rgba(255,255,255,0.06);border-radius:14px;padding:14px;font-family:'JetBrains Mono','Fira Code','Cascadia Code',monospace;font-size:12px;line-height:1.7;overflow:auto;max-height:calc(100vh - 200px)">
   <div style="color:#2a2a32;margin-bottom:8px;font-size:11px;user-select:none">
-    <span style="color:#6366f1">◆</span> autoclawpi — last {{len .Logs}} requests
+    <span style="color:#6366f1">◆</span> autoclawpi — {{.RangeLabel}} · last {{len .Logs}} requests
   </div>
   {{range .Logs}}
   <div style="display:flex;gap:8px;padding:2px 0;white-space:nowrap">
@@ -32,10 +75,17 @@
     {{else}}
     <span style="color:#f87171;flex-shrink:0">✗</span>
     {{end}}
-    <span style="color:#475569;flex-shrink:0">{{slice .CreatedAt 11 19}}</span>
+    <span style="color:#475569;flex-shrink:0" title="{{localDate .CreatedAt}}">{{localTime .CreatedAt}}</span>
     <span style="color:#818cf8;flex-shrink:0">{{printf "%-18s" .Model}}</span>
     <span style="color:#475569">→{{.PromptTokens}} ←{{.CompletionTokens}} ∑{{.TotalTokens}}</span>
     <span style="color:#fbbf24">¥{{printf "%.4f" .Cost}}</span>
+    <span style="color:#94a3b8">·</span>
+    <span style="color:#2dd4bf">Account:</span>
+    {{if .AccountName}}
+    <span style="color:#2dd4bf">{{.AccountName}}</span>
+    {{else}}
+    <span style="color:#2dd4bf">#{{.AccountID}}</span>
+    {{end}}
     {{if .Error}}
     <span style="color:#f87171">⚠ {{.Error}}</span>
     {{end}}
@@ -49,4 +99,20 @@
   <div style="margin-top:4px;color:#2a2a32">_</div>
 </div>
 {{end}}
+</div>
+<script>
+/* Pertahankan posisi scroll terminal antar poll 3 detik.
+   Guard agar listener tidak ter-stack saat template ter-swap ulang. */
+if (!window.__logsScrollInit) {
+  window.__logsScrollInit = true;
+  document.body.addEventListener('htmx:beforeSwap', function () {
+    var t = document.getElementById('logs-term');
+    if (t) window.__logScroll = t.scrollTop;
+  });
+  document.body.addEventListener('htmx:afterSwap', function () {
+    var t = document.getElementById('logs-term');
+    if (t && window.__logScroll) t.scrollTop = window.__logScroll;
+  });
+}
+</script>
 {{end}}

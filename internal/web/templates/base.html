@@ -86,6 +86,9 @@ select option{background:#1a1a1f;color:#e2e8f0;padding:8px}
 .badge-info{background:rgba(96,165,250,0.12);color:#60a5fa}
 input,select{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 14px;color:#e2e8f0;font-size:13px;width:100%;outline:none;transition:all .2s ease}
 input:focus,select:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,0.1)}
+.log-range-btn{display:inline-flex;align-items:center;padding:6px 14px;border-radius:999px;font-size:12px;font-weight:600;color:#94a3b8;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);text-decoration:none;transition:all .2s ease;cursor:pointer}
+.log-range-btn:hover{background:rgba(255,255,255,0.08);color:#e2e8f0;border-color:rgba(255,255,255,0.12)}
+.log-range-btn.active{background:linear-gradient(135deg,rgba(99,102,241,0.2),rgba(79,70,229,0.14));color:#818cf8;border-color:rgba(99,102,241,0.35);box-shadow:0 0 12px rgba(99,102,241,0.12)}
 </style>
 </head>
 <body>
@@ -99,13 +102,13 @@ input:focus,select:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,2
     <button class="sidebar-toggle-mobile" onclick="toggleMobile()" style="position:static;display:none;width:28px;height:28px;border-radius:8px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);color:#64748b;cursor:pointer;font-size:12px"><i class="fas fa-times"></i></button>
   </div>
   <div style="flex:1;overflow-y:auto;padding:4px 0">
-    <a href="/" class="sidebar-link {{if eq .Page "dash"}}active{{end}}"><i class="fas fa-chart-pie"></i> <span>Dashboard</span></a>
-    <a href="/accounts" class="sidebar-link {{if eq .Page "accts"}}active{{end}}"><i class="fas fa-users"></i> <span>Accounts</span></a>
-    <a href="/checkin" class="sidebar-link {{if eq .Page "checkin"}}active{{end}}"><i class="fas fa-calendar-check"></i> <span>Check-In</span></a>
-    <a href="/settings" class="sidebar-link {{if eq .Page "settings"}}active{{end}}"><i class="fas fa-cog"></i> <span>Settings</span></a>
-  <a href="/docs" class="sidebar-link {{if eq .Page "docs"}}active{{end}}"><i class="fas fa-book"></i> <span>API Docs</span></a>
-  <a href="/health" class="sidebar-link {{if eq .Page "health"}}active{{end}}"><i class="fas fa-heartbeat"></i> <span>Health</span></a>
-  <a href="/logs" class="sidebar-link {{if eq .Page "logs"}}active{{end}}"><i class="fas fa-chart-line"></i> <span>Logs</span></a>
+    <a href="/" class="sidebar-link"><i class="fas fa-chart-pie"></i> <span>Dashboard</span></a>
+    <a href="/accounts" class="sidebar-link"><i class="fas fa-users"></i> <span>Accounts</span></a>
+    <a href="/checkin" class="sidebar-link"><i class="fas fa-calendar-check"></i> <span>Check-In</span></a>
+    <a href="/settings" class="sidebar-link"><i class="fas fa-cog"></i> <span>Settings</span></a>
+    <a href="/docs" class="sidebar-link"><i class="fas fa-book"></i> <span>API Docs</span></a>
+    <a href="/health" class="sidebar-link"><i class="fas fa-heartbeat"></i> <span>Health</span></a>
+    <a href="/logs" class="sidebar-link"><i class="fas fa-chart-line"></i> <span>Logs</span></a>
   </div>
   <div style="border-top:1px solid rgba(255,255,255,0.06);margin:0 12px;padding:8px 0;flex-shrink:0">
     <a href="/logout" class="sidebar-link"><i class="fas fa-sign-out-alt"></i> <span>Logout</span></a>
@@ -123,6 +126,105 @@ function toggleSidebar(){
 function toggleMobile(){
   document.getElementById('sidebar').classList.toggle('open');
 }
+</script>
+<script>
+/* ── SPA Router ─────────────────────────────────────────────── */
+(function(){
+  function setActiveNav(path){
+    document.querySelectorAll('.sidebar-link').forEach(function(a){
+      var href=a.getAttribute('href')||'';
+      var active=false;
+      if(href==='/'){active=(path==='/'||path==='');}
+      else if(href!=='/logout'){active=(path===href||path.indexOf(href+'/')===0);}
+      a.classList.toggle('active',active);
+    });
+  }
+
+  function spaSwap(html){
+    var mc=document.getElementById('mainContent');
+    mc.innerHTML=html;
+    mc.scrollTop=0;
+    var sb=document.getElementById('sidebar');
+    if(sb){sb.classList.remove('open');}
+    /* Re-execute inline scripts (innerHTML tidak mengeksekusi <script>) */
+    mc.querySelectorAll('script').forEach(function(old){
+      var s=document.createElement('script');
+      if(old.getAttribute('src')){s.src=old.getAttribute('src');}
+      else{s.textContent=old.textContent;}
+      old.parentNode.replaceChild(s,old);
+    });
+    /* Proses elemen HTMX yang baru */
+    if(window.htmx){htmx.process(mc);}
+  }
+
+  window.spaNavigate=function(url,push,method,body){
+    var opts={headers:{'X-SPA':'1'},credentials:'same-origin',redirect:'follow'};
+    if(method&&method.toUpperCase()!=='GET'){opts.method=method.toUpperCase();opts.body=body;}
+    fetch(url,opts).then(function(res){
+      var ct=res.headers.get('Content-Type')||'';
+      /* Bukan JSON SPA (mis. halaman login standalone) → full load */
+      if(ct.indexOf('application/json')===-1){window.location.href=res.url||url;return;}
+      return res.json().then(function(d){
+        if(res.status===401){window.location.href=(d&&d.redirect)||'/login';return;}
+        if(d&&d.title){document.title=d.title;}
+        spaSwap((d&&d.html)||'');
+        var finalUrl;
+        try{finalUrl=new URL(res.url||url,location.href);}catch(err){finalUrl=new URL(url,location.href);}
+        if(push!==false){history.pushState({spa:true},'',finalUrl);}
+        setActiveNav(finalUrl.pathname);
+      });
+    }).catch(function(){window.location.href=url;});
+  };
+
+  /* Intercept klik link internal */
+  document.addEventListener('click',function(e){
+    if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
+    var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;
+    if(!a||a.target==='_blank'||a.hasAttribute('download'))return;
+    var href=a.getAttribute('href');
+    if(!href||href.charAt(0)==='#'||/^(mailto:|tel:|javascript:)/i.test(href))return;
+    var url;
+    try{url=new URL(href,location.href);}catch(err){return;}
+    if(url.origin!==location.origin)return;
+    e.preventDefault();
+    /* Logout & OAuth callback: full page load (cookie/redirect eksternal) */
+    if(url.pathname==='/logout'||url.pathname.indexOf('/auth/callback')===0){window.location.href=url.href;return;}
+    window.spaNavigate(url.href,true);
+  });
+
+  /* Intercept submit form non-HTMX */
+  document.addEventListener('submit',function(e){
+    if(e.defaultPrevented)return;
+    var form=e.target;
+    if(!form||form.tagName!=='FORM')return;
+    if(form.hasAttribute('hx-post')||form.hasAttribute('hx-get'))return;
+    if(form.closest('[hx-post],[hx-get]'))return;
+    var method=(form.getAttribute('method')||'GET').toUpperCase();
+    var action=form.getAttribute('action')||location.href;
+    e.preventDefault();
+    if(method==='GET'){
+      var url=new URL(action,location.href);
+      var params=new URLSearchParams();
+      new FormData(form).forEach(function(v,k){if(typeof v==='string')params.append(k,v);});
+      url.search=params.toString();
+      window.spaNavigate(url.href,true);
+    }else{
+      window.spaNavigate(action,true,method,new FormData(form));
+    }
+  });
+
+  /* Back/forward browser */
+  window.addEventListener('popstate',function(){
+    window.spaNavigate(location.href,false);
+  });
+
+  /* Sesi habis saat request HTMX → ke login */
+  document.body.addEventListener('htmx:responseError',function(e){
+    if(e.detail&&e.detail.xhr&&e.detail.xhr.status===401){window.location.href='/login';}
+  });
+
+  setActiveNav(location.pathname);
+})();
 </script>
 </body>
 </html>{{end}}

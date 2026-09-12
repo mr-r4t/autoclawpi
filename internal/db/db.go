@@ -23,6 +23,7 @@ type Account struct {
 	Provider     string `json:"provider"` // zai | google
 	UserID       string `json:"user_id"`
 	UserName     string `json:"user_name"`
+	Email        string `json:"email"` // di-extract dari JWT access token
 	DeviceID     string `json:"device_id"`
 	Points       int    `json:"points"`
 	Active       bool   `json:"active"`
@@ -84,6 +85,7 @@ func migrate() error {
 		provider TEXT NOT NULL DEFAULT 'zai',
 		user_id TEXT NOT NULL DEFAULT '',
 		user_name TEXT NOT NULL DEFAULT '',
+		email TEXT NOT NULL DEFAULT '',
 		device_id TEXT NOT NULL DEFAULT '',
 		points INTEGER NOT NULL DEFAULT 0,
 		active INTEGER NOT NULL DEFAULT 1,
@@ -124,16 +126,23 @@ func migrate() error {
 	);
 	`
 	_, err := DB.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migrasi database lama: tambah kolom email jika belum ada.
+	// Error "duplicate column name" diabaikan (kolom sudah ada).
+	_, _ = DB.Exec(`ALTER TABLE accounts ADD COLUMN email TEXT NOT NULL DEFAULT ''`)
+	return nil
 }
 
 // --- Account CRUD ---
 
 // AddAccount menyimpan akun baru.
-func AddAccount(name, accessToken, refreshToken, provider, userID, userName, deviceID string) (int64, error) {
+func AddAccount(name, accessToken, refreshToken, provider, userID, userName, deviceID, email string) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := DB.Exec(`INSERT INTO accounts (name, access_token, refresh_token, provider, user_id, user_name, device_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		name, accessToken, refreshToken, provider, userID, userName, deviceID, now)
+	res, err := DB.Exec(`INSERT INTO accounts (name, access_token, refresh_token, provider, user_id, user_name, email, device_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		name, accessToken, refreshToken, provider, userID, userName, email, deviceID, now)
 	if err != nil {
 		return 0, err
 	}
@@ -142,7 +151,7 @@ func AddAccount(name, accessToken, refreshToken, provider, userID, userName, dev
 
 // ListAccounts mengembalikan semua akun.
 func ListAccounts() ([]Account, error) {
-	rows, err := DB.Query(`SELECT id, name, access_token, refresh_token, provider, user_id, user_name, device_id, points, active, created_at, last_used_at FROM accounts ORDER BY id`)
+	rows, err := DB.Query(`SELECT id, name, access_token, refresh_token, provider, user_id, user_name, email, device_id, points, active, created_at, last_used_at FROM accounts ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +160,7 @@ func ListAccounts() ([]Account, error) {
 	var accounts []Account
 	for rows.Next() {
 		var a Account
-		if err := rows.Scan(&a.ID, &a.Name, &a.AccessToken, &a.RefreshToken, &a.Provider, &a.UserID, &a.UserName, &a.DeviceID, &a.Points, &a.Active, &a.CreatedAt, &a.LastUsedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.AccessToken, &a.RefreshToken, &a.Provider, &a.UserID, &a.UserName, &a.Email, &a.DeviceID, &a.Points, &a.Active, &a.CreatedAt, &a.LastUsedAt); err != nil {
 			return nil, err
 		}
 		accounts = append(accounts, a)
@@ -161,9 +170,9 @@ func ListAccounts() ([]Account, error) {
 
 // GetAccount mengambil satu akun berdasarkan ID.
 func GetAccount(id int64) (*Account, error) {
-	row := DB.QueryRow(`SELECT id, name, access_token, refresh_token, provider, user_id, user_name, device_id, points, active, created_at, last_used_at FROM accounts WHERE id = ?`, id)
+	row := DB.QueryRow(`SELECT id, name, access_token, refresh_token, provider, user_id, user_name, email, device_id, points, active, created_at, last_used_at FROM accounts WHERE id = ?`, id)
 	var a Account
-	if err := row.Scan(&a.ID, &a.Name, &a.AccessToken, &a.RefreshToken, &a.Provider, &a.UserID, &a.UserName, &a.DeviceID, &a.Points, &a.Active, &a.CreatedAt, &a.LastUsedAt); err != nil {
+	if err := row.Scan(&a.ID, &a.Name, &a.AccessToken, &a.RefreshToken, &a.Provider, &a.UserID, &a.UserName, &a.Email, &a.DeviceID, &a.Points, &a.Active, &a.CreatedAt, &a.LastUsedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -174,9 +183,9 @@ func GetAccount(id int64) (*Account, error) {
 
 // GetActiveAccount mengembalikan akun aktif pertama (untuk single-account mode).
 func GetActiveAccount() (*Account, error) {
-	row := DB.QueryRow(`SELECT id, name, access_token, refresh_token, provider, user_id, user_name, device_id, points, active, created_at, last_used_at FROM accounts WHERE active = 1 ORDER BY id LIMIT 1`)
+	row := DB.QueryRow(`SELECT id, name, access_token, refresh_token, provider, user_id, user_name, email, device_id, points, active, created_at, last_used_at FROM accounts WHERE active = 1 ORDER BY id LIMIT 1`)
 	var a Account
-	if err := row.Scan(&a.ID, &a.Name, &a.AccessToken, &a.RefreshToken, &a.Provider, &a.UserID, &a.UserName, &a.DeviceID, &a.Points, &a.Active, &a.CreatedAt, &a.LastUsedAt); err != nil {
+	if err := row.Scan(&a.ID, &a.Name, &a.AccessToken, &a.RefreshToken, &a.Provider, &a.UserID, &a.UserName, &a.Email, &a.DeviceID, &a.Points, &a.Active, &a.CreatedAt, &a.LastUsedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -187,9 +196,36 @@ func GetActiveAccount() (*Account, error) {
 
 // UpdateAccount memperbarui data akun.
 func UpdateAccount(a *Account) error {
-	_, err := DB.Exec(`UPDATE accounts SET name=?, access_token=?, refresh_token=?, provider=?, user_id=?, user_name=?, device_id=?, points=?, active=?, last_used_at=? WHERE id=?`,
-		a.Name, a.AccessToken, a.RefreshToken, a.Provider, a.UserID, a.UserName, a.DeviceID, a.Points, a.Active, a.LastUsedAt, a.ID)
+	_, err := DB.Exec(`UPDATE accounts SET name=?, access_token=?, refresh_token=?, provider=?, user_id=?, user_name=?, email=?, device_id=?, points=?, active=?, last_used_at=? WHERE id=?`,
+		a.Name, a.AccessToken, a.RefreshToken, a.Provider, a.UserID, a.UserName, a.Email, a.DeviceID, a.Points, a.Active, a.LastUsedAt, a.ID)
 	return err
+}
+
+// UpdateAccountUsed mencatat waktu terakhir akun dipakai (untuk strategi least-used).
+func UpdateAccountUsed(id int64) {
+	_, _ = DB.Exec(`UPDATE accounts SET last_used_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339), id)
+}
+
+// ValidStrategy melaporkan apakah nama strategi valid.
+func ValidStrategy(s string) bool {
+	return s == "round-robin" || s == "least-used" || s == "first"
+}
+
+// GetStrategy membaca strategi account selection tersimpan. Default "round-robin".
+func GetStrategy() string {
+	v, _ := GetConfig("strategy")
+	if ValidStrategy(v) {
+		return v
+	}
+	return "round-robin"
+}
+
+// SetStrategy menyimpan strategi account selection.
+func SetStrategy(s string) error {
+	if !ValidStrategy(s) {
+		return fmt.Errorf("strategi tidak valid: %s", s)
+	}
+	return SetConfig("strategy", s)
 }
 
 // DeleteAccount menghapus akun.
@@ -272,6 +308,7 @@ func SetConfig(key, value string) error {
 type LogEntry struct {
 	ID               int64   `json:"id"`
 	AccountID        int64   `json:"account_id"`
+	AccountName      string  `json:"account_name"` // di-join dari tabel accounts
 	Model            string  `json:"model"`
 	PromptTokens     int     `json:"prompt_tokens"`
 	CompletionTokens int     `json:"completion_tokens"`
@@ -291,19 +328,44 @@ func AddLog(l *LogEntry) (int64, error) {
 	return res.LastInsertId()
 }
 
-func ListLogs(limit int) ([]LogEntry, error) {
+// logSinceClause mengubah parameter range (today|7d|30d|60d) menjadi klausa SQL.
+// String kosong berarti tanpa filter (semua waktu).
+func logSinceClause(since string) string {
+	switch since {
+	case "today":
+		return "created_at >= datetime('now', 'start of day')"
+	case "7d":
+		return "created_at >= datetime('now', '-7 days')"
+	case "30d":
+		return "created_at >= datetime('now', '-30 days')"
+	case "60d":
+		return "created_at >= datetime('now', '-60 days')"
+	default:
+		return ""
+	}
+}
+
+func ListLogs(limit int, since string) ([]LogEntry, error) {
 	if limit < 1 {
 		limit = 50
 	}
-	rows, err := DB.Query(`SELECT id, account_id, model, prompt_tokens, completion_tokens, total_tokens, cost, status, error, created_at FROM logs ORDER BY id DESC LIMIT ?`, limit)
+	query := `SELECT l.id, l.account_id, COALESCE(NULLIF(a.email, ''), NULLIF(a.name, ''), NULLIF(a.user_name, ''), ''),
+	l.model, l.prompt_tokens, l.completion_tokens, l.total_tokens, l.cost, l.status, l.error, l.created_at
+	FROM logs l LEFT JOIN accounts a ON a.id = l.account_id`
+	if clause := logSinceClause(since); clause != "" {
+		query += " WHERE l." + clause
+	}
+	query += " ORDER BY l.id DESC LIMIT ?"
+	rows, err := DB.Query(query, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var logs []LogEntry
 	for rows.Next() {
 		var l LogEntry
-		if err := rows.Scan(&l.ID, &l.AccountID, &l.Model, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.Cost, &l.Status, &l.Error, &l.CreatedAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.AccountID, &l.AccountName, &l.Model, &l.PromptTokens, &l.CompletionTokens, &l.TotalTokens, &l.Cost, &l.Status, &l.Error, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		logs = append(logs, l)
@@ -311,7 +373,25 @@ func ListLogs(limit int) ([]LogEntry, error) {
 	return logs, rows.Err()
 }
 
-func LogStats() (totalReq int, totalTokens int, totalCost float64, err error) {
-	err = DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost),0) FROM logs WHERE created_at >= datetime('now', 'start of day')`).Scan(&totalReq, &totalTokens, &totalCost)
+func LogStats(since string) (totalReq int, totalTokens int, totalCost float64, err error) {
+	query := `SELECT COUNT(*), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost),0) FROM logs`
+	if clause := logSinceClause(since); clause != "" {
+		query += " WHERE " + clause
+	}
+	err = DB.QueryRow(query).Scan(&totalReq, &totalTokens, &totalCost)
 	return
+}
+
+// ClearLogs menghapus log request sesuai filter periode (today|7d|30d|60d|all).
+// Mengembalikan jumlah baris yang terhapus.
+func ClearLogs(since string) (int64, error) {
+	query := `DELETE FROM logs`
+	if clause := logSinceClause(since); clause != "" {
+		query += " WHERE " + clause
+	}
+	res, err := DB.Exec(query)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

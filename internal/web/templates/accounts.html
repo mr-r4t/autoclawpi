@@ -21,7 +21,8 @@
         <div style="font-weight:600;font-size:14px">{{if .Name}}{{.Name}}{{else}}Account #{{.ID}}{{end}}</div>
         <div style="font-size:12px;color:#64748b;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
           <span><i class="fas fa-coins" style="color:#fbbf24"></i> {{.Points}} pts</span>
-          <span>{{if .UserID}}<i class="fas fa-user"></i> {{.UserID}}{{end}}</span>
+          {{if .Email}}<span><i class="fas fa-envelope" style="color:#818cf8"></i> {{.Email}}</span>
+          {{else if .UserID}}<span><i class="fas fa-user"></i> {{.UserID}}</span>{{end}}
           <span class="badge {{if .Active}}badge-success{{else}}badge-danger{{end}}">
             {{if .Active}}Active{{else}}Inactive{{end}}
           </span>

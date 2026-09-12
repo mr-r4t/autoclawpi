@@ -114,6 +114,7 @@ func cmdServe(args []string) error {
 
 	// Main handler: OpenAI API
 	apiSrv := server.New(cl).WithAPIKey(cfg.APIKey)
+	apiSrv.WarmModels()
 	if cfg.RateLimitPerSec > 0 || cfg.RateLimitBurst > 0 {
 		apiSrv.WithRateLimit(cfg.RateLimitPerSec, cfg.RateLimitBurst)
 	}
@@ -182,6 +183,10 @@ func finishLogin(ctx context.Context, cl *client.Client, vendor, code, state, na
 		Provider:     vendor,
 		SavedAt:      time.Now().Format(time.RFC3339),
 	}
+	if out.Data.UserID != nil {
+		c.UserID = fmt.Sprint(out.Data.UserID)
+	}
+	c.UserName = out.Data.UserName
 	if err := store.Save(c); err != nil {
 		return err
 	}

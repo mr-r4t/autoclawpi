@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -69,6 +70,53 @@ type LoginResponse struct {
 		UserID       any    `json:"user_id,omitempty"`
 		UserName     string `json:"user_name,omitempty"`
 	} `json:"data,omitempty"`
+}
+
+// ParseUTC parse waktu SQLite "2006-01-02 15:04:05" (UTC) ke time.Time.
+func ParseUTC(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
+// DecodeJWT mengekstrak info user dari payload JWT access token.
+// Return: email, userID (kosong jika token bukan JWT / tidak berisi info).
+// Pada token AutoClaw, field "jti" berisi email user.
+func DecodeJWT(token string) (email, userID string) {
+	// Strip "Bearer " prefix
+	raw := strings.TrimPrefix(token, "Bearer ")
+	parts := strings.Split(raw, ".")
+	if len(parts) < 2 {
+		return "", ""
+	}
+	// Add padding
+	payload := parts[1]
+	switch len(payload) % 4 {
+	case 2:
+		payload += "=="
+	case 3:
+		payload += "="
+	}
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return "", ""
+	}
+	var data struct {
+		UserID any    `json:"user_id"`
+		JTI    string `json:"jti"`
+	}
+	if err := json.Unmarshal(decoded, &data); err != nil {
+		return "", ""
+	}
+	uid := ""
+	if data.UserID != nil {
+		uid = fmt.Sprint(data.UserID)
+	}
+	return data.JTI, uid
 }
 
 // OAuthURL meminta URL OAuth. Return: url, state, error.
